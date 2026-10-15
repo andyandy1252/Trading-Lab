@@ -1,0 +1,20 @@
+---
+description: Trading lab stack and deploy boundaries
+alwaysApply: true
+---
+
+# Stack
+
+- `web`: Next.js, TypeScript, Tailwind. The only web server. Claude is called from server actions only.
+- `engine`: Python worker. Polars computes features. DuckDB reads Parquet. The worker is not a web API. No FastAPI. No Redis.
+- `shared`: the Pydantic strategy spec, spec migrations, and generated JSON Schema and TypeScript.
+- `docs`: `ARCHITECTURE.md`, `SPEC.md`, `DECISIONS.md`.
+- Supabase provides auth, Postgres, and file storage. Backtests do not run in edge functions.
+- The web app inserts a job row. The worker claims the oldest queued job with `SELECT ... FOR UPDATE SKIP LOCKED`, runs it, and writes the results back.
+- A running job that outlives the worker timeout returns to the queue. After three attempts the job is dead and the error is saved.
+- Market data is Databento. NQ first, ES second. Files are raw outright contracts. Signals use the front month, the contract with the higher volume. A pattern does not use bars from two contracts.
+- Charts, when the UI exists: TradingView Lightweight Charts.
+- Hosting, when it is time: Vercel for web, Railway or Fly for the worker. One GitHub Action runs pytest, typecheck, and web tests. A failing check blocks merge.
+- Secrets live in `.env.local` and in one env module that refuses to boot if a required key is missing. Build that module with the scaffold.
+- Paper trading is the default. The recommended wait before live is 5 trading days and 20 completed trades. Skipping it shows a warning and requires one logged confirmation. The daily-loss kill switch and the micro-contract size cap stay on.
+- Live order routing waits for a legal review. Broker connections use encrypted API keys.

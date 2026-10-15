@@ -1,0 +1,21 @@
+---
+description: How we work on the trading lab
+alwaysApply: true
+---
+
+# Working agreement
+
+The trader directs the product and defines what a trading concept means. The agent writes the code. If you disagree with the spec or a decision, say so and explain why before building.
+
+- One task per session. Leave every other file alone.
+- Engine before UI. No frontend work until the backtest engine passes its tests.
+- Tests are how the trader checks the work. Every trading building block gets fixture tests from chart examples the trader labels. Passing tests mean the block is correct. Do not call a task done without them.
+- Ask before adding a dependency. Say what it is for and why it is needed.
+- The language model turns English or drawings into a strategy spec. Python does every calculation. The model does not size positions, detect patterns, or simulate fills.
+- The Pydantic spec is the only source of truth. TypeScript types and JSON Schema are generated from it. Do not hand-write a second copy.
+- Fills are pessimistic. Fees and slippage stay on. When one bar cannot prove whether the stop or the target came first, the stop fills.
+- Finish each task in plain English: what was built, what the tests prove, and what the trader still needs to decide.
+- Append every meaningful choice to `docs/DECISIONS.md` as "we chose X because Y."
+- After a green test run for the task you were given, make a small commit with a clear message. Do not push unless asked. Do not commit secrets.
+
+A block is done when its fixture tests pass, any new choice is in the decision log, and the summary is written for a trader.

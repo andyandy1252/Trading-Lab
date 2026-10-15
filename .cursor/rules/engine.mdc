@@ -1,0 +1,27 @@
+---
+description: Backtest correctness rules for engine Python
+globs: engine/**/*.py
+alwaysApply: false
+---
+
+# Engine correctness
+
+Read `docs/SPEC.md` before changing signal or fill code.
+
+Blocks are pure functions: bars and explicit parameters in, events out. `after` and `within_bars` live on the entry rule, not inside a block.
+
+- Use closed bars only. A forming bar cannot create a level, a gap, or a fill.
+- A market entry fills at the next bar's open, then adverse slippage is applied.
+- A buy limit fills only when price trades through the limit by `limit_through_ticks` (at least 1). The fill price is the limit. A sell limit is the mirror.
+- A stop fill is the worse of a gap-through open and the stop worsened by market slippage.
+- If the stop and the target both fall inside one fill bar and the data cannot prove the order, the stop fills.
+- One open position. A new signal while a trade is open is ignored.
+- A pattern that would use bars from two outright contracts does not fire.
+- Every block parameter is explicit. Do not hide a default inside the function.
+- Pair every behavior with a fixture test.
+
+```python
+# Buy limit. Trading down to the limit price is not enough.
+if bar.low <= limit - ticks(limit_through_ticks):
+    fill(limit)
+```
