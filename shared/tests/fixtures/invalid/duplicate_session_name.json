@@ -1,0 +1,20 @@
+{
+  "spec_version": "1.0",
+  "name": "Bad spec",
+  "instrument": "NQ",
+  "signal_timeframe": "15m",
+  "fill_resolution": "1s",
+  "ai_model_version": "claude-opus-4-8",
+  "asset_class": "futures",
+  "execution_latency_class": "real-time",
+  "sessions": [
+    {"name": "ny_am", "tz": "America/New_York", "start": "09:00", "end": "11:00", "days": [1,2,3,4,5]},
+    {"name": "ny_am", "tz": "America/New_York", "start": "11:00", "end": "13:00", "days": [1,2,3,4,5]}
+  ],
+  "blocks": [],
+  "entry": {"side": "long", "when": [], "order": "market"},
+  "exit": {"stop": {"ref": "x.y", "offset_ticks": 4}, "target": {"type": "rr", "value": 2.0}, "time_stop": {"type": "session_end", "session": "ny_am"}},
+  "risk": {"contracts": 1, "session": "ny_am", "max_trades_per_session": 1, "daily_loss_stop_usd": 100.0},
+  "costs": {"commission_per_side_usd": 2.5, "market_slippage_ticks": 1, "news_open_slippage_ticks": 3, "limit_through_ticks": 1},
+  "meta": {"source": "english", "source_prompt": "test", "parent_version": null}
+}
