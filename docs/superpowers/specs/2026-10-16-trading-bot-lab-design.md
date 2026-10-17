@@ -247,6 +247,33 @@ If the spec is modified after a backtest, the result is invalidated. The bot rev
 
 ---
 
+## UX Patterns (Astral-Informed)
+
+These patterns are validated by Astral's production usage and adapted for futures + our architecture.
+
+### Split-panel workspace
+Chat/builder on the left. Chart, code, backtest results, and event log on the right. The right panel changes context based on what you just did — describe a strategy and the spec card appears; run a backtest and the equity curve appears. You never navigate away to see results.
+
+### Streamed reasoning display
+When Claude is building a strategy or analyzing a video/PDF, stream the thinking in real time with labeled steps: *"Fetching transcript… Identifying entry conditions… Validating against spec schema…"* Users watch the work happen instead of waiting on a spinner. Step labels come from the tool calls Claude makes internally.
+
+### Bar Replay
+Walk through a completed backtest bar by bar. For each bar: the raw OHLCV, which agents fired and what they reported, whether the consensus rule passed or failed, whether an order was active, and what the exit state was. This is the primary debugging tool — it answers "why didn't my bot trade here?" and "why did it take that loss?" We add agent signal overlay that Astral does not have.
+
+### Regime period selection
+In any equity curve view, the user can click and drag to select a subperiod. The stats panel recalculates all metrics for just that period — useful for checking "how did this bot do during the August 2024 selloff?" Low build cost, high user value.
+
+### Three-state deploy review
+Before any bot transitions to LIVE, a full review screen appears showing: strategy version locked in, execution instrument, session windows, agent roster, notification channel verified, daily loss limit set, broker account confirmed. The user must click through each section. Nothing deploys until the review is completed and logged.
+
+### Strategy versioning gate
+Any change to a spec after a backtest creates a new version and invalidates the prior backtest result. The UI makes this explicit: *"You changed the entry rule. This creates version 3. Your current backtest result (v2) no longer applies — you'll need to rerun."* We enforce what Astral only coaches.
+
+### A2UI result cards
+Every MCP tool response and every major dashboard action returns a structured card alongside any text. Card types: `chart_card`, `backtest_card`, `order_preview_card`, `positions_card`, `event_log_card`, `bot_status_card`, `agent_signal_card`. Clients that support MCP UI extensions render interactive cards; others get the same data as formatted text.
+
+---
+
 ## Dashboard Management Actions
 
 Every deployed bot supports:
@@ -340,12 +367,14 @@ Every deployed bot supports:
 21. **Telegram notifier** — fills, alerts, kill-switch, two-way commands
 
 ### Phase 6 — Dashboard
-22. **Strategy builder** — chat + file upload interface → Claude → rule card
-23. **Backtest viewer** — results, equity curve, metrics display
-24. **Bot dashboard** — portfolio view, per-bot controls, audit log, unified event log
-25. **Incubation UI + live deployment flow** — gate progress, confirmation, Telegram setup
-26. **Marketplace** — browse public strategies, fork to DRAFT, publish your own (metrics only by default)
-27. **Indicator library UI** — view, create, edit, and test custom indicators
+22. **Strategy builder** — split-panel workspace, chat + file upload → Claude (streamed reasoning) → rule card
+23. **Backtest viewer** — equity curve, regime period selection, full metrics display
+24. **Bar Replay** — step through backtest bar by bar with agent signal overlay per bar
+25. **Bot dashboard** — portfolio view, per-bot controls, audit log, unified event log
+26. **Three-state deploy review** — version lock, instrument, agents, notifications, daily loss, broker confirmation
+27. **Incubation UI** — gate progress tracker, live-vs-backtest divergence chart
+28. **Marketplace** — browse public strategies, fork to DRAFT, publish your own (metrics only by default)
+29. **Indicator library UI** — view, create, edit, and test custom indicators
 
 ---
 
