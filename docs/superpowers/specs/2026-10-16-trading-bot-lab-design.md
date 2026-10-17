@@ -1,0 +1,262 @@
+# Trading Bot Lab — Design Spec
+_Version 1.0 · 2026-10-16_
+
+## Purpose
+
+A single-tenant personal trading bot platform for futures (NQ/ES on CME). The owner builds, backtests, paper-trades, and live-trades their own bots first. Once the full lifecycle is validated end-to-end, the platform is productized for non-technical users who follow the same path.
+
+---
+
+## Bot Lifecycle
+
+Every bot moves through these states in order:
+
+```
+DRAFT → BACKTESTED → INCUBATING → LIVE → RETIRED
+```
+
+A bot can be PAUSED (stops new entries, leaves open position running) or STOPPED (flattens and halts) from LIVE. It can be RETIRED from any state. State transitions are logged and irreversible except PAUSED → LIVE.
+
+| State | What it means |
+|---|---|
+| DRAFT | Spec created, not yet backtested |
+| BACKTESTED | Has a passing backtest result attached |
+| INCUBATING | Running on live prices in paper mode, working toward the gate |
+| LIVE | Sending real orders to the broker |
+| PAUSED | No new entries; open position still managed by exit rules |
+| RETIRED | Permanently archived; full history readable, cannot reactivate |
+
+---
+
+## Architecture
+
+**Single-tenant for Phase 1. Platform-grade core from day one.**
+
+```
+web/          Next.js dashboard + strategy builder (only web server)
+engine/       Python worker — all math, no web API
+shared/       Pydantic spec model, JSON Schema, TypeScript types, migrations
+```
+
+External services:
+- **Supabase** — Postgres, auth, file storage
+- **Databento** — historical Parquet data (multi-instrument)
+- **Claude API** — English/video/PDF → spec translation only; never execution decisions
+- **Broker adapter** — pluggable interface; first implementation TBD
+- **Telegram** — alerts + two-way bot control commands
+
+**Key principle:** Claude is called from Next.js server actions only. The browser never calls the model, the broker, or the engine directly.
+
+---
+
+## Multi-Agent Swarm Architecture
+
+Each bot contains a team of agents plus a deterministic execution core.
+
+```
+Scanner agents   ─┐
+Filter agents    ─┼──→  Signal consensus  ──→  Execution core  ──→  Broker
+Risk agent       ─┘         (rules)              (deterministic)
+```
+
+### Agent types
+
+| Type | Role | Can be AI-powered? |
+|---|---|---|
+| Scanner | Find setups matching the strategy concept | Yes |
+| Filter | Confirm or veto based on domain (news, timing, regime, correlation) | Yes |
+| Risk | Check contracts, daily loss, drawdown | No — always deterministic math |
+| Execution | Place and manage orders per spec rules | No — always deterministic |
+
+**Consensus rule:** A trade only enters when all required agents have responded within the latency window. A timed-out or errored agent drops the signal — it is never treated as a "yes."
+
+**Multi-instrument analysis:** Each bot has one execution instrument (the instrument it trades). Agents may analyze any number of reference instruments and timeframes declared in the bot config (e.g. VIX on 1h to filter NQ entries, ES on daily for regime). The worker pre-loads all declared reference data before running agents. Agents cannot reach outside the declared list — this keeps the backtest reproducible.
+
+**Backtestability rule:** Every AI-powered agent has a deterministic proxy — a rule-based approximation used for historical backtesting. In paper and live mode, the real agent runs and its structured outputs are logged. The agent signal log lets you compare real vs. proxy over time.
+
+---
+
+## Signal Block System
+
+Signal blocks are the building blocks of scanner agents. Each block is a pure function: given a set of closed bars, it reports a structured result or nothing.
+
+### Built-in blocks (v1, hand-coded reference implementations)
+- `session_levels` — prior/developing session high, low, midpoint, open
+- `liquidity_sweep` — price runs a level and closes back through it
+- `fair_value_gap` — three-candle untraded zone (bullish or bearish)
+
+### AI-assisted block creation (multi-modal input)
+
+Non-technical users can define a new signal block by providing any of:
+- A YouTube URL (system fetches transcript)
+- A PDF upload (course material, strategy guide)
+- A chart screenshot with annotations
+- Plain English description
+
+**Flow:**
+1. User submits input(s)
+2. Claude analyzes and proposes a draft block definition: name, parameters, what it detects, what it reports
+3. Draft appears as a plain-English block card the user reads
+4. User confirms ("Yes, that's the setup") or corrects ("Measure wick-to-wick, not body-to-body")
+5. Claude revises until confirmed
+6. Block is saved, versioned, and available for use in any bot spec
+
+This is the primary path for non-technical users to add new strategy concepts without writing code.
+
+---
+
+## Strategy Spec Requirements
+
+A bot spec is rejected by the engine and the web app if any required field is missing. Required fields:
+
+- [ ] Name (unique, human-readable)
+- [ ] Execution instrument (NQ / MNQ / ES / MES)
+- [ ] Reference instruments list (can be empty)
+- [ ] Signal timeframe
+- [ ] Fill resolution (1s goal; 1m allowed)
+- [ ] Session definition (name, timezone, start, end, weekdays)
+- [ ] Entry rule: side (long or short, explicit — never inferred), trigger conditions, order type, price reference if limit/stop, expiry in bars
+- [ ] Exit rule: stop (reference + offset in ticks, must be on protective side), target (R:R ratio), time stop
+- [ ] Risk: contracts, max trades per session, daily loss stop in USD
+- [ ] Costs: commission per side USD, market slippage ticks, limit-through ticks
+- [ ] Agent roster: which agents are active, their parameters, consensus rule
+- [ ] AI model version that generated the spec
+- [ ] spec_version field
+- [ ] Asset class (futures)
+- [ ] Execution latency class (real-time / near-real-time / batch)
+
+---
+
+## Backtest Requirements
+
+A backtest result is accepted only if it includes all of:
+
+- [ ] Total trades ≥ 100
+- [ ] Out-of-sample trades ≥ 30
+- [ ] Win rate
+- [ ] Profit factor
+- [ ] Maximum drawdown (USD and %)
+- [ ] Sharpe ratio (annualized)
+- [ ] Deflated Sharpe (corrects for batch selection — penalizes picking the best from a large pool)
+- [ ] Commission and slippage paid (totals, not zero)
+- [ ] In-sample and out-of-sample date ranges (both recorded)
+- [ ] Full equity curve
+- [ ] Worst consecutive loss streak
+- [ ] Data source and date range
+
+If the spec is modified after a backtest, the result is invalidated. The bot reverts to DRAFT and must rerun.
+
+---
+
+## Guards & Gates
+
+| Gate | Rule |
+|---|---|
+| Spec gate | All required fields present and valid before backtest runs |
+| Backtest quality gate | Meets minimum trade counts and required metrics |
+| Spec lock | Modifying spec after backtest invalidates the result |
+| Incubation gate | ≥ 5 trading days AND ≥ 20 paper trades before LIVE promotion |
+| Incubation override | Allowed with a single logged confirmation; kill switch stays on |
+| Notification gate | Telegram channel must be verified before LIVE |
+| Kill switch | Daily loss limit set at promotion; can only be lowered while running; trips → flatten + block + alert |
+| Agent consensus | All required agents must respond within latency window; timeout = drop signal |
+| Audit immutability | Audit log is append-only at DB level; no application code can update or delete |
+
+---
+
+## Dashboard Management Actions
+
+Every deployed bot supports:
+
+- **Start** — begin taking signals on the next session open
+- **Pause** — stop new entries; open position runs to its exit rules
+- **Stop** — flatten open position at market; bot transitions to PAUSED state (no open position, no new entries)
+- **Kill** — emergency flatten with slippage; lock bot from restarting without confirmation
+- **Switch to paper** — move to paper execution without changing the spec
+- **Switch to alerts-only** — generate signals, log them, do not send orders
+- **View equity curve** — real-time PnL, drawdown, fill log
+- **Compare to backtest** — live curve vs. backtest projection; divergence triggers alert
+- **Tighten daily loss limit** — can be tightened any time; cannot be raised
+- **View audit log** — every order, fill price, slippage, commission, agent signals
+- **Retire** — archive permanently; history stays readable
+- **Notification channel management** — add/remove/test Telegram without stopping bot
+
+**Portfolio view:** All bots visible simultaneously with status, today's PnL, state. Shared daily loss ceiling across all live bots.
+
+**Telegram two-way commands:** `/pause {bot-name}`, `/stop {bot-name}`, `/status`, `/pnl`, `/kill {bot-name}`
+
+---
+
+## Data Model
+
+### Core tables
+
+**`bots`** — one row per bot; name, state, created_at
+
+**`bot_configs`** — versioned; every save is a new row. Fields: bot_id, version, parent_version, spec JSONB, agent roster JSONB, ai_model_version, reference_instruments JSONB
+
+**`backtest_jobs`** — job queue. Fields: bot_config_id, status (queued/running/done/dead), attempts (max 3), claimed_at, error
+
+**`backtest_results`** — written by worker. Fields: job_id, all required metrics, equity curve JSONB, in-sample/out-of-sample dates, data source
+
+**`trades`** — all modes (backtest/paper/live) in one table. Fields: bot_id, mode, entry/exit times and prices, fill prices, slippage ticks, commission USD, PnL, exit reason, agent_signals JSONB
+
+**`agent_signal_log`** — append-only. Fields: bot_id, bar_time, agent_name, agent_type, structured output JSONB, latency_ms
+
+**`audit_log`** — immutable. Fields: bot_id, trade_id, timestamp, event_type, details JSONB. No updates, no deletes.
+
+### Supporting tables
+
+**`incubation_progress`** — paper trade count, trading days elapsed, gate_met_at, backtest_result_id (for divergence)
+
+**`live_deployments`** — daily_loss_limit_usd (locked at promotion), position_size_cap, broker_adapter, encrypted broker credentials, confirmation_logged_at
+
+**`notification_channels`** — bot_id, type (telegram), config JSONB, verified_at
+
+**`daily_loss_checks`** — bot_id, date, realized + open-mark PnL, limit, tripped_at
+
+---
+
+## Build Order
+
+### Phase 1 — Foundation
+1. **Pydantic spec model** — all required fields, cross-field validation (stop on correct side, etc.), JSON Schema + TypeScript generation, fixture tests for every rejection case
+2. **Database schema** — all tables, migrations in `shared/spec/migrations/`
+3. **Env module** — refuses to boot if any required key is missing
+
+### Phase 2 — Engine
+4. **Signal block interface** — abstract base every block implements; fixture test harness
+5. **Built-in signal blocks** — `session_levels`, `liquidity_sweep`, `fair_value_gap`; fixture tests from labeled chart examples
+6. **Fill simulator** — pessimistic fills, slippage, commission, stop gap-fill rule
+7. **Backtest runner** — multi-instrument data load, bar iteration, agent proxy hooks, result write-back
+8. **Job worker** — SKIP LOCKED claim, run, retry, dead-letter
+
+### Phase 3 — Agent layer
+9. **Agent interface** — abstract base (input schema, output schema, proxy flag, latency class)
+10. **Deterministic agents** — timing agent, risk agent (establish the pattern)
+11. **AI-powered agents** — market scanner, news filter (Claude API, log outputs, deterministic proxies)
+12. **AI-assisted block creation flow** — multi-modal input (YouTube/PDF/image/text) → draft block card → user confirmation → save
+
+### Phase 4 — Live execution
+13. **Paper trading runner** — same engine, live price feed
+14. **Incubation tracker** — gate logic, divergence check vs. backtest
+15. **Broker adapter interface** — abstract layer; first real implementation when broker is chosen
+16. **Telegram notifier** — fills, alerts, kill-switch, two-way commands
+
+### Phase 5 — Dashboard
+17. **Strategy builder** — chat + file upload interface → Claude → rule card
+18. **Backtest viewer** — results, equity curve, metrics display
+19. **Bot dashboard** — portfolio view, per-bot controls, audit log
+20. **Incubation UI + live deployment flow** — gate progress, confirmation, Telegram setup
+
+---
+
+## Open Questions
+
+1. Which broker API first — Tradovate, TopstepX, Interactive Brokers, or other?
+2. Minimum incubation period — 5 trading days / 20 paper trades (current default), or different?
+3. Maximum daily loss for your personal bot — what dollar amount, and can you raise it after deployment?
+4. Databento subscription — tick-by-tick (1s fills) or minute bars (cheaper, lower fill accuracy)?
+5. Should the held-out test period be locked from you during development of the first bot, or is it acceptable to see it?
+6. Which AI model for strategy translation — Claude Sonnet 4.6 (faster/cheaper) or Opus 4.8 (more capable)?
+7. What divergence threshold between live results and backtest projection should trigger an alert — e.g. live PnL more than 30% below backtest projection over the same trade count?
