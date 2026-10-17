@@ -44,6 +44,7 @@ External services:
 - **Claude API** — English/video/PDF → spec translation only; never execution decisions
 - **Broker adapter** — pluggable interface; first implementation TBD
 - **Telegram** — alerts + two-way bot control commands
+- **MCP server** — exposes trading tools so users can operate the lab from Claude Code, Cursor, ChatGPT, or any MCP client
 
 **Key principle:** Claude is called from Next.js server actions only. The browser never calls the model, the broker, or the engine directly.
 
@@ -102,6 +103,88 @@ Non-technical users can define a new signal block by providing any of:
 6. Block is saved, versioned, and available for use in any bot spec
 
 This is the primary path for non-technical users to add new strategy concepts without writing code.
+
+---
+
+## Custom Indicators Library
+
+Indicators are first-class objects, defined once and reusable across any number of bots. A custom indicator is a named, versioned computation that takes bar data (and optionally reference instrument data) and returns a scalar or series. It is not a signal block — it does not detect a pattern. It is a building block that signal blocks and agents can consume.
+
+### Examples
+- "NY session high as of 10:00 AM" — a time-bounded session level
+- "NQ 20-period EMA minus ES 20-period EMA" — cross-instrument spread
+- "ATR-normalized candle body size" — volatility-adjusted measurement
+
+### Definition flow
+1. User describes the indicator in plain English (or uploads a PDF/video showing it)
+2. Claude proposes a definition: name, inputs (timeframe, instrument, parameters), output type (scalar / series), formula in plain English
+3. User confirms or corrects
+4. Indicator is saved, versioned, and appears in the indicator library
+5. Any signal block or agent can reference it by name
+
+### Storage
+Each indicator has its own row in `indicators` table: name, version, definition JSONB (formula, inputs, output type), ai_model_version, created_at. The library is shared across all bots owned by the user.
+
+---
+
+## Strategy Marketplace
+
+A public library of strategies and indicators that any user can browse, fork, and build on. Solves the blank-page problem — new users start from a working example rather than nothing.
+
+### What is published
+- Strategy name and plain-English description
+- Backtest summary metrics (trade count, win rate, profit factor, Sharpe, max drawdown, date range tested)
+- The signal blocks and agents used (names only — not the exact parameters unless the author chooses to share)
+- Whether it is futures / stocks / crypto (we are futures-only, but the field exists for the platform version)
+- Author handle (optional anonymous)
+
+### What is never published
+- Exact entry/exit parameters, stop offsets, or timing windows (competitive edge stays private by default)
+- Live or paper trading results from the author's real account
+- Broker credentials or account details of any kind
+
+### Fork flow
+1. User finds a strategy in the marketplace
+2. Clicks "Fork" — creates a new DRAFT bot in their account with the public fields pre-filled
+3. They fill in or adjust the private fields (parameters, risk limits, costs) before backtest runs
+4. Forked bot is entirely theirs; no link back to original after fork
+
+### Tables
+`marketplace_listings` — strategy_id (optional, if author links their bot), title, description, metrics_snapshot JSONB, blocks_used JSONB (names only), published_at, fork_count
+
+---
+
+## MCP Server Layer
+
+Exposes the lab's trading tools as MCP endpoints so users can operate the full workflow from Claude Code, Cursor, ChatGPT, Gemini, or any MCP-compatible client. This IS the "one workspace" experience — users never have to leave the AI they already work in.
+
+### How it works
+The MCP server sits in front of the web layer. It authenticates via the user's API key (generated in the dashboard). Each tool call hits a Next.js API route internally and returns a structured result. The AI client renders the result — either as plain text or, in clients that support it, as a rich interactive card.
+
+### MCP tools (v1)
+
+| Tool | What it does |
+|---|---|
+| `research_market` | Pull quotes, bar data, or key metrics for any supported instrument |
+| `get_chart` | Return OHLCV data for a symbol + timeframe, optionally with indicator overlays |
+| `build_strategy` | Translate a plain-English description into a draft strategy spec |
+| `run_backtest` | Queue a backtest for a named bot config; return job ID |
+| `get_backtest_result` | Return the full result for a completed backtest job |
+| `list_bots` | Return all bots with their current state and today's PnL |
+| `get_bot_status` | Return full detail for one bot: state, open position, last signal |
+| `deploy_to_paper` | Promote a BACKTESTED bot to INCUBATING (paper mode) |
+| `preview_order` | Show an order ticket with quantity, type, price, and risk — nothing submits |
+| `get_portfolio` | Return open positions, today's PnL, and account balance |
+| `get_event_log` | Return the execution event log for a bot: signals, orders, fills, risk checks |
+| `pause_bot` | Pause a LIVE bot (same as Telegram `/pause`) |
+| `stop_bot` | Stop and flatten a LIVE bot |
+| `kill_bot` | Emergency kill with slippage + lock |
+
+### Interactive result cards
+For clients that support MCP UI extensions (Claude Desktop, some Cursor builds), each tool returns a structured card schema alongside the text response. Card types: `chart_card`, `backtest_card`, `order_preview_card`, `positions_card`, `event_log_card`, `bot_status_card`. Clients that don't support cards get the same data as formatted text.
+
+### Auth
+API key generated per user in the dashboard. Key is scoped to read-only or read-write. `preview_order` and any destructive action require read-write scope. Key can be revoked instantly from the dashboard.
 
 ---
 
@@ -215,6 +298,12 @@ Every deployed bot supports:
 
 **`daily_loss_checks`** — bot_id, date, realized + open-mark PnL, limit, tripped_at
 
+**`indicators`** — name, version, parent_version, definition JSONB (formula, inputs, output type), ai_model_version, created_at. Shared library across all user bots.
+
+**`marketplace_listings`** — title, description, metrics_snapshot JSONB, blocks_used JSONB (names only), published_at, fork_count. No private parameters stored.
+
+**`api_keys`** — user_id, key_hash (never store plaintext), scope (read / read-write), created_at, revoked_at. Powers MCP server authentication.
+
 ---
 
 ## Build Order
@@ -236,18 +325,27 @@ Every deployed bot supports:
 10. **Deterministic agents** — timing agent, risk agent (establish the pattern)
 11. **AI-powered agents** — market scanner, news filter (Claude API, log outputs, deterministic proxies)
 12. **AI-assisted block creation flow** — multi-modal input (YouTube/PDF/image/text) → draft block card → user confirmation → save
+13. **Custom indicators library** — indicator definition, versioning, storage, reference from blocks/agents
 
-### Phase 4 — Live execution
-13. **Paper trading runner** — same engine, live price feed
-14. **Incubation tracker** — gate logic, divergence check vs. backtest
-15. **Broker adapter interface** — abstract layer; first real implementation when broker is chosen
-16. **Telegram notifier** — fills, alerts, kill-switch, two-way commands
+### Phase 4 — MCP server
+14. **API key auth** — generate, scope, revoke; key_hash stored never plaintext
+15. **MCP tool definitions** — all 14 tools from the MCP tools table, wired to internal Next.js API routes
+16. **Interactive card schemas** — structured card payloads for clients that support MCP UI extensions
+17. **MCP server documentation** — how to connect from Claude Code, Cursor, ChatGPT
 
-### Phase 5 — Dashboard
-17. **Strategy builder** — chat + file upload interface → Claude → rule card
-18. **Backtest viewer** — results, equity curve, metrics display
-19. **Bot dashboard** — portfolio view, per-bot controls, audit log
-20. **Incubation UI + live deployment flow** — gate progress, confirmation, Telegram setup
+### Phase 5 — Live execution
+18. **Paper trading runner** — same engine, live price feed
+19. **Incubation tracker** — gate logic, divergence check vs. backtest
+20. **Broker adapter interface** — abstract layer; first real implementation when broker is chosen
+21. **Telegram notifier** — fills, alerts, kill-switch, two-way commands
+
+### Phase 6 — Dashboard
+22. **Strategy builder** — chat + file upload interface → Claude → rule card
+23. **Backtest viewer** — results, equity curve, metrics display
+24. **Bot dashboard** — portfolio view, per-bot controls, audit log, unified event log
+25. **Incubation UI + live deployment flow** — gate progress, confirmation, Telegram setup
+26. **Marketplace** — browse public strategies, fork to DRAFT, publish your own (metrics only by default)
+27. **Indicator library UI** — view, create, edit, and test custom indicators
 
 ---
 
