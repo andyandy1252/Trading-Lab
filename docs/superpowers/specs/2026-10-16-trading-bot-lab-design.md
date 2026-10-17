@@ -251,12 +251,18 @@ Every deployed bot supports:
 
 ---
 
-## Open Questions
+## Decisions
 
-1. Which broker API first — Tradovate, TopstepX, Interactive Brokers, or other?
-2. Minimum incubation period — 5 trading days / 20 paper trades (current default), or different?
-3. Maximum daily loss for your personal bot — what dollar amount, and can you raise it after deployment?
-4. Databento subscription — tick-by-tick (1s fills) or minute bars (cheaper, lower fill accuracy)?
-5. Should the held-out test period be locked from you during development of the first bot, or is it acceptable to see it?
-6. Which AI model for strategy translation — Claude Sonnet 4.6 (faster/cheaper) or Opus 4.8 (more capable)?
-7. What divergence threshold between live results and backtest projection should trigger an alert — e.g. live PnL more than 30% below backtest projection over the same trade count?
+1. **Broker** — Interactive Brokers or Tradovate; TBD based on which is easiest to connect first. Personal bot will be tested with a small live account ($100–$200). Broker adapter is pluggable — decision does not block engine work. Additional brokers (and data vendors like QuantData) will be evaluated as candidates.
+
+2. **Incubation gate** — Default of 5 trading days + 20 paper trades stays. The gate is editable but reducing it requires a prominent warning explaining the risk. The kill switch and size cap stay on regardless.
+
+3. **Daily loss limit** — 10% of the account balance at deployment time. For a $100 account that is $10. The limit is stored as a dollar amount (computed at deployment). It can only be lowered while the bot is running — raising it requires retiring and redeploying.
+
+4. **Market data** — Tick-by-tick 1-second fills via Databento (primary). Cost to be confirmed once data subscriptions are set up. QuantData is a candidate cheaper alternative — user will provide a link for evaluation.
+
+5. **Held-out test data** — Visible to the owner during development of the first bot. Acceptable for personal use; the platform version for other users will lock it by default.
+
+6. **AI model** — Claude Opus 4.8 for strategy translation and signal block creation. More capable; cost and latency are acceptable for the use case.
+
+7. **Divergence alert threshold** — Default: alert when live PnL is more than 30% below the backtest projection over the same number of completed trades. Configurable per bot.
