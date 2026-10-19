@@ -5,3 +5,6 @@ pytest-cov==5.0.0
 psycopg2-binary==2.9.9
 python-dotenv==1.0.1
 datamodel-code-generator==0.25.6
+polars==1.44.2
+pyarrow==20.0.0
+tzdata==2026.5

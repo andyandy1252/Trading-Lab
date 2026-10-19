@@ -9,26 +9,26 @@
   "execution_latency_class": "real-time",
   "sessions": [
     {
-      "name": "cash_rth",
+      "name": "cme_eth",
       "tz": "America/New_York",
-      "start": "09:30",
-      "end": "16:00",
-      "days": [1, 2, 3, 4, 5]
+      "start": "18:00",
+      "end": "17:00",
+      "days": [7, 1, 2, 3, 4]
     },
     {
       "name": "ny_am",
       "tz": "America/New_York",
-      "start": "09:00",
+      "start": "09:30",
       "end": "11:00",
       "days": [1, 2, 3, 4, 5]
     }
   ],
   "blocks": [
     {
-      "id": "cash_rth_levels",
+      "id": "pdh",
       "type": "session_levels",
       "params": {
-        "session": "cash_rth",
+        "session": "cme_eth",
         "levels": ["high", "low"],
         "which": "prior_completed"
       }
@@ -37,9 +37,8 @@
       "id": "sweep",
       "type": "liquidity_sweep",
       "params": {
-        "level": "cash_rth_levels.high",
-        "penetration_ticks": 1,
-        "confirm_bars": 2
+        "level": "pdh.high",
+        "penetration_ticks": 1
       }
     },
     {
@@ -47,7 +46,7 @@
       "type": "fair_value_gap",
       "params": {
         "direction": "bearish",
-        "min_size_ticks": 8
+        "min_size_ticks": 0
       }
     }
   ],
@@ -83,7 +82,7 @@
   "consensus_rule": {"type": "all"},
   "meta": {
     "source": "english",
-    "source_prompt": "Sell NQ after the prior cash high is swept and a bearish fair value gap prints.",
+    "source_prompt": "Sell NQ after the prior day high is swept and a bearish fair value gap prints.",
     "parent_version": null
   }
 }

@@ -36,6 +36,16 @@ StopType = Literal["session_end"]
 TargetType = Literal["rr"]
 LevelWhich = Literal["prior_completed", "developing"]
 FVGDirection = Literal["bullish", "bearish"]
+BlockType = Literal[
+    "session_levels",
+    "liquidity_sweep",
+    "fair_value_gap",
+    "swing_points",
+    "market_structure_shift",
+    "order_block",
+    "inverse_fvg",
+    "equilibrium",
+]
 
 
 # ---------------------------------------------------------------------------
@@ -52,7 +62,7 @@ class Session(BaseModel):
 
 class Block(BaseModel):
     id: str = Field(pattern=r'^[a-z][a-z0-9_]*$')
-    type: str
+    type: BlockType
     params: dict[str, Any]
 
 
@@ -166,6 +176,10 @@ class StrategySpec(BaseModel):
 
     @model_validator(mode='after')
     def validate_fill_resolution_granularity(self) -> StrategySpec:
+        # SPEC.md L136: fill_resolution must be the same size as the signal
+        # timeframe or finer. With the only legal values (1s, 1m) this can
+        # never be violated today (fill 1m == finest signal 1m); kept as a
+        # defensive guard that will matter if a coarser fill value is ever added.
         signal_mins = TIMEFRAME_MINUTES[self.signal_timeframe]
         fill_mins = FILL_RESOLUTION_MINUTES[self.fill_resolution]
         if fill_mins > signal_mins:
@@ -229,11 +243,9 @@ class StrategySpec(BaseModel):
                 )
         return self
 
-    @model_validator(mode='after')
-    def validate_stop_offset_ticks_non_negative(self) -> StrategySpec:
-        if self.exit.stop.offset_ticks < 0:
-            raise ValueError(
-                "exit.stop.offset_ticks must be >= 0. "
-                "A stop on the wrong side of the entry is not allowed."
-            )
-        return self
+    # NOTE: The full protective-side rule (SPEC.md L169: "the stop price ...
+    # must be below/above the entry fill") compares the stop against the entry
+    # FILL price, which is only known during fill simulation (Phase 2). Phase 1
+    # enforces only offset_ticks >= 0 via StopExit.offset_ticks = Field(ge=0).
+    # No static non-negativity validator is needed here -- the field constraint
+    # rejects negatives before any model_validator runs.

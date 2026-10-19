@@ -1,6 +1,6 @@
 {
   "spec_version": "1.0",
-  "name": "Bad spec — short with stop that would be below entry",
+  "name": "Bad spec — negative stop offset_ticks (rejected by ge=0)",
   "instrument": "NQ",
   "signal_timeframe": "15m",
   "fill_resolution": "1s",
