@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from engine.bars import Bar
 from engine.events import Signal, resolve_ref
 from engine.instruments import INSTRUMENTS
 from engine.sessions import cme_day_start, occurrence_containing
-from shared.spec.model import Session, StrategySpec
+from shared.spec.model import TIMEFRAME_MINUTES, Session, StrategySpec
 
 
 @dataclass
@@ -117,7 +117,29 @@ def _target_hit(side: str, bar: Bar, target: float, through_ticks: int, tick: fl
     return bar.open <= target or bar.low <= target - extra
 
 
-def simulate(spec: StrategySpec, bars: list[Bar], signals: list[Signal]) -> BacktestResult:
+def _signal_indexes(signal_bars: list[Bar], fill_bars: list[Bar], minutes: int) -> list[int | None]:
+    if minutes <= 0:
+        raise ValueError("signal timeframe must be at least one minute")
+    delta = timedelta(minutes=minutes)
+    opens = [bar.ts for bar in signal_bars]
+    indexes: list[int | None] = []
+    j = 0
+    for fill in fill_bars:
+        while j + 1 < len(opens) and opens[j + 1] <= fill.ts:
+            j += 1
+        if opens and opens[j] <= fill.ts < opens[j] + delta:
+            indexes.append(j)
+        else:
+            indexes.append(None)
+    return indexes
+
+
+def simulate(
+    spec: StrategySpec,
+    bars: list[Bar],
+    signals: list[Signal],
+    fill_bars: list[Bar] | None = None,
+) -> BacktestResult:
     info = INSTRUMENTS[spec.instrument.value]
     tick = info.tick_size
     dpt = info.dollars_per_tick
@@ -138,6 +160,11 @@ def simulate(spec: StrategySpec, bars: list[Bar], signals: list[Signal]) -> Back
     fills_by_occurrence: dict[datetime, int] = {}
     equity = 0.0
     signal_by_index = {s.bar_index: s for s in signals}
+    if fill_bars is None:
+        fill_bars = bars
+        signal_of: list[int | None] = list(range(len(bars)))
+    else:
+        signal_of = _signal_indexes(bars, fill_bars, TIMEFRAME_MINUTES[spec.signal_timeframe])
 
     def day_pnl(ts: datetime) -> float:
         return closed_pnl_by_day.get(cme_day_start(ts), 0.0)
@@ -210,7 +237,9 @@ def simulate(spec: StrategySpec, bars: list[Bar], signals: list[Signal]) -> Back
                 return False
         return True
 
-    for i, bar in enumerate(bars):
+    for fill_i, bar in enumerate(fill_bars):
+        sig_i = signal_of[fill_i]
+        is_last = fill_i + 1 == len(fill_bars) or signal_of[fill_i + 1] != sig_i
         day = cme_day_start(bar.ts)
 
         if pending_flatten and position is not None:
@@ -223,6 +252,14 @@ def simulate(spec: StrategySpec, bars: list[Bar], signals: list[Signal]) -> Back
             is_buy = position.side == "short"
             close_position(bar, _market_px(is_buy, bar.open, slip, tick), "time_stop")
 
+        if (
+            working is not None
+            and working.expire_index is not None
+            and sig_i is not None
+            and sig_i > working.expire_index
+        ):
+            working = None
+
         if working is not None and position is None:
             if working.kind == "market":
                 is_buy = spec.entry.side == "long"
@@ -231,7 +268,12 @@ def simulate(spec: StrategySpec, bars: list[Bar], signals: list[Signal]) -> Back
                 limit = resolve_ref(spec.entry.price or "", working.signal.bound)
                 if _limit_hit(spec.entry.side, bar, limit, through, tick):
                     open_position(bar, limit, working.signal)
-                elif working.expire_index is not None and i >= working.expire_index:
+                elif (
+                    is_last
+                    and sig_i is not None
+                    and working.expire_index is not None
+                    and sig_i >= working.expire_index
+                ):
                     working = None
 
         if position is not None:
@@ -258,12 +300,12 @@ def simulate(spec: StrategySpec, bars: list[Bar], signals: list[Signal]) -> Back
                 pending_flatten = True
                 blocked_days.add(day)
 
-        if i in signal_by_index and can_take(signal_by_index[i]):
-            sig = signal_by_index[i]
+        if is_last and sig_i is not None and sig_i in signal_by_index and can_take(signal_by_index[sig_i]):
+            sig = signal_by_index[sig_i]
             expire = None
             if spec.entry.order in ("limit", "stop") and spec.entry.expire_bars is not None:
-                expire = i + spec.entry.expire_bars
-            occ = occurrence_containing(time_session, bar.ts)
+                expire = sig_i + spec.entry.expire_bars
+            occ = occurrence_containing(time_session, bars[sig_i].ts)
             working = _Working(
                 kind=spec.entry.order,
                 signal=sig,

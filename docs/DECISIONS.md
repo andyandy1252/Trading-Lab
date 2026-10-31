@@ -59,3 +59,15 @@
 - We chose an order block as the leg from the origin swing to the sweep extreme, born on the confirming MSS, one per new trend, because that is the TJR cause-leg, not a demand box and not an FVG.
 - We chose inverse FVG as a later body close through the gap’s far edge because a wick into the zone is respect, not inversion.
 - We chose equilibrium as a signal-bar location filter on the latest swing range midpoint because it is a location, not a sixth pattern.
+
+## 2026-10-31
+
+- We chose the front month from the prior completed CME equity session (18:00–17:00 America/New_York) because the contract has to be known at the session open. Using the session's own volume would look ahead.
+- We chose not to trade the first session in a file because it has no prior session to rank. That session's volume picks the next front month.
+- We chose to break a first-session tie toward the nearer expiry, and to roll only when a later expiry's prior-session volume is strictly higher, because an expiring contract's volume blip must not pull signals back onto the old prices.
+- We chose to keep each front-month segment on that outright's own bars, plus one prior session of the same outright, because prior-day high has to exist and a roll gap must not print a fair value gap.
+- We chose Databento GLBX.MDP3 parent `NQ.FUT` for definitions, then raw outright `ohlcv-1s` (or `ohlcv-1m`) written to one Parquet file. DuckDB reads it. Polars builds the signal bars. `databento` and `duckdb` were added because the stack already named them.
+- We chose to store bar opens as UTC without a timezone marker because DuckDB's timezone reader on Windows asked for `pytz`, and every bar open in this lab is UTC.
+- We chose a one-digit contract year in the window from the bar's year minus one through eight years ahead, because Globex raw symbols look like `NQZ6`.
+- We chose to resolve a stop and a target on the fill bars when those bars are finer than the signal, and to keep counting `expire_bars` in signal bars, because the sample strategy is 15-minute signals and 1-second fills. One fill bar that contains both still fills the stop.
+- We chose to refuse a Databento quote over $5 unless `--max-cost` is raised, because the first download should not spend more than that on its own.

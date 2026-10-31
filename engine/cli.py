@@ -39,6 +39,38 @@ def cmd_backtest(spec_path: str, bars_path: str) -> int:
     return 0
 
 
+def cmd_backtest_outrights(spec_path: str, outrights_path: str) -> int:
+    from engine.marketdata.outrights import read_outrights, run_front_month_backtest
+
+    spec = StrategySpec.model_validate_json(Path(spec_path).read_text(encoding="utf-8"))
+    bars = read_outrights(outrights_path)
+    result = run_front_month_backtest(spec, bars)
+    _print_result(result)
+    return 0
+
+
+def cmd_fetch_nq(start: str, end: str, out: str, schema: str, max_cost: float) -> int:
+    import databento as db
+
+    from engine.marketdata.databento_nq import load_databento_key, pull_nq_outrights
+
+    try:
+        client = db.Historical(load_databento_key())
+        path = pull_nq_outrights(
+            client,
+            start=start,
+            end=end,
+            dest=Path(out),
+            schema=schema,
+            max_cost_usd=max_cost,
+        )
+    except RuntimeError as exc:
+        print(exc)
+        return 1
+    print(f"wrote,{path}")
+    return 0
+
+
 def cmd_translate(english: str) -> int:
     outcome = translate(english)
     if not outcome.ok:
@@ -54,7 +86,15 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="cmd", required=True)
     backtest = sub.add_parser("backtest", help="Run a spec against bars")
     backtest.add_argument("--spec", required=True)
-    backtest.add_argument("--bars", required=True)
+    source = backtest.add_mutually_exclusive_group(required=True)
+    source.add_argument("--bars", help="One Parquet or CSV series")
+    source.add_argument("--outrights", help="Raw outright Parquet from fetch-nq")
+    fetch = sub.add_parser("fetch-nq", help="Download NQ raw outrights to Parquet")
+    fetch.add_argument("--start", required=True)
+    fetch.add_argument("--end", required=True)
+    fetch.add_argument("--out", required=True)
+    fetch.add_argument("--schema", default="ohlcv-1s", choices=("ohlcv-1s", "ohlcv-1m"))
+    fetch.add_argument("--max-cost", type=float, default=5.0)
     trans = sub.add_parser("translate", help="English to spec JSON")
     trans.add_argument("english", nargs="+")
     return parser
@@ -63,7 +103,11 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.cmd == "backtest":
+        if args.outrights:
+            return cmd_backtest_outrights(args.spec, args.outrights)
         return cmd_backtest(args.spec, args.bars)
+    if args.cmd == "fetch-nq":
+        return cmd_fetch_nq(args.start, args.end, args.out, args.schema, args.max_cost)
     if args.cmd == "translate":
         return cmd_translate(" ".join(args.english))
     return 2

@@ -37,7 +37,13 @@ Only closed bars can create a level, a gap, or a fill. The bar that is still for
 
 ## Prices
 
-Signals read the raw outright of the front month, the contract whose volume is higher. Prices are not back-adjusted. The exact volume-crossover rule is fixed when the data task is built. A fair value gap, sweep, or session level that would need bars from two contracts does not fire.
+Signals read the raw outright of the front month. Prices are not back-adjusted. Spreads are not outrights.
+
+The volume day is the CME equity session, 18:00–17:00 America/New_York, the same window as `cme_eth`. A bar in the 17:00–18:00 halt does not count, and neither does a bar outside that session.
+
+The front month for a session is the outright with the highest volume in the prior completed session. The first session in a file has no prior session, so it is not traded. Its volume chooses the front month for the next session. A tie goes to the nearer expiry. After that, the front month changes only when a later-expiring outright printed strictly more volume in the session that just ended than the incumbent did. It never rolls backward.
+
+A fair value gap, sweep, or session level is computed on one outright. The bars for a front-month segment include that outright's prior session, so the prior-day high exists, and they include no bar from another outright. A pattern that would need both does not fire.
 
 ## Sample
 

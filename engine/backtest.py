@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime
+
 from engine.bars import Bar
 from engine.blocks.equilibrium import detect_equilibrium
 from engine.blocks.fair_value_gap import FairValueGapEvent, detect_fair_value_gaps
@@ -216,7 +218,14 @@ def collect_events(spec: StrategySpec, bars: list[Bar]) -> dict[str, list[BoundE
     return events
 
 
-def run_backtest(spec: StrategySpec, bars: list[Bar]) -> BacktestResult:
+def run_backtest(
+    spec: StrategySpec,
+    bars: list[Bar],
+    fill_bars: list[Bar] | None = None,
+    not_before: datetime | None = None,
+) -> BacktestResult:
     events = collect_events(spec, bars)
     signals = find_signals(spec.entry.when, events, len(bars))
-    return simulate(spec, bars, signals)
+    if not_before is not None:
+        signals = [signal for signal in signals if bars[signal.bar_index].ts >= not_before]
+    return simulate(spec, bars, signals, fill_bars=fill_bars)
