@@ -32,6 +32,23 @@ def test_cli_backtest_prints_a_trade(tmp_path, capsys):
     assert "net_pnl_usd" in captured.out
 
 
+def test_cli_raid_retrace_on_a_short_file_prints_no_trades(tmp_path, capsys):
+    from engine.marketdata.outrights import OutrightBar, write_outrights
+
+    path = tmp_path / "outrights.parquet"
+    write_outrights(
+        path,
+        [
+            OutrightBar(ny(2026, 10, 19, 18, 0), "NQZ6", 100, 101, 99, 100, 10),
+            OutrightBar(ny(2026, 10, 20, 10, 0), "NQZ6", 100, 101, 99, 100, 10),
+        ],
+    )
+    code = main(["raid-retrace", "--outrights", str(path)])
+    captured = capsys.readouterr()
+    assert code == 0
+    assert "No trades." in captured.out
+
+
 def test_cli_translate_refuses_unicorn(capsys):
     code = main(["translate", "enter", "the", "unicorn"])
     captured = capsys.readouterr()
