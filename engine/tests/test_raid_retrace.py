@@ -1,8 +1,10 @@
 from datetime import timedelta
 
 from engine.bars import Bar
+from engine.bars import Bar
 from engine.strategies.raid_retrace import (
     Pool,
+    RaidRules,
     RaidSetup,
     collect_pools,
     find_raid_setups,
@@ -136,3 +138,67 @@ def test_open_trade_flattens_at_11_and_the_third_entry_is_refused():
     stopped = simulate_raid_setups(setups, spiked, signal_minutes=15)
     assert len(stopped) == 2
     assert [trade.exit_reason for trade in stopped] == ["stop", "stop"]
+
+
+def _shifted(start):
+    origin = _short_morning()
+    base = origin[0].ts
+    return [
+        Bar(start + (item.ts - base), item.open, item.high, item.low, item.close)
+        for item in origin
+    ]
+
+
+def test_dropping_the_respect_wick_allows_the_inversion():
+    bars = _short_morning()
+    bars[5] = bar(ny(2026, 10, 21, 10, 15), 99, 99.25, 98.75, 99.1)
+    bars[6] = bar(ny(2026, 10, 21, 10, 30), 99.1, 99.2, 98.2, 98.3)
+    rules = RaidRules("No respect wick", require_respect=False)
+    setups = find_raid_setups(bars, _pool(), tick_size=0.25, rules=rules)
+    assert len(setups) == 1
+    assert setups[0].signal_time == ny(2026, 10, 21, 10, 30)
+
+
+def test_a_15_minute_pool_is_ignored_when_the_sweep_must_be_higher_timeframe():
+    pools = [Pool(100.0, "buy_side", ny(2026, 10, 21, 8, 0), "15m")]
+    rules = RaidRules("Higher-timeframe sweep", sources=("1h", "4h"))
+    assert find_raid_setups(_short_morning(), pools, tick_size=0.25, rules=rules) == []
+    assert len(find_raid_setups(_short_morning(), pools, tick_size=0.25)) == 1
+
+
+def test_a_9_15_inversion_is_outside_the_9_30_window():
+    start = ny(2026, 10, 21, 7, 45)
+    pools = [Pool(100.0, "buy_side", ny(2026, 10, 21, 7, 0), "1h")]
+    bars = _shifted(start)
+    early = RaidRules("Prior-hour liquidity, 9:30", window_start=9 * 60 + 30)
+    assert find_raid_setups(bars, pools, tick_size=0.25, rules=early) == []
+    assert len(find_raid_setups(bars, pools, tick_size=0.25)) == 1
+
+
+def test_same_morning_hourly_pool_is_not_prior_session_liquidity():
+    rules = RaidRules("Prior-hour liquidity, 9:30", sources=("1h",), prior_session_only=True)
+    assert find_raid_setups(_short_morning(), _pool(), tick_size=0.25, rules=rules) == []
+    prior = [Pool(100.0, "buy_side", ny(2026, 10, 20, 16, 0), "1h")]
+    setups = find_raid_setups(_short_morning(), prior, tick_size=0.25, rules=rules)
+    assert len(setups) == 1
+    assert setups[0].source == "1h"
+
+
+def test_a_stop_beyond_the_gap_fills_when_the_sweep_stop_does_not():
+    setup = RaidSetup(
+        "short",
+        ny(2026, 10, 21, 9, 0),
+        ny(2026, 10, 20, 9, 0),
+        110.0,
+        100.0,
+        "15m",
+        gap_far=100.0,
+    )
+    fills = [
+        bar(ny(2026, 10, 21, 9, 15), 100, 101, 99.75, 100),
+        bar(ny(2026, 10, 21, 11, 0), 100, 100.25, 99.75, 100),
+    ]
+    gap_stop = simulate_raid_setups([setup], fills, stop_at="gap")
+    sweep_stop = simulate_raid_setups([setup], fills, stop_at="sweep")
+    assert gap_stop[0].exit_reason == "stop"
+    assert sweep_stop[0].exit_reason == "time_stop"

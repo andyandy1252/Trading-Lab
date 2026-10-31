@@ -12,6 +12,7 @@ session, which are already in that 1-hour set.
 
 from __future__ import annotations
 
+from bisect import bisect_left
 from dataclasses import dataclass, field
 from datetime import datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -45,6 +46,38 @@ class RaidSetup:
     sweep_extreme: float
     level: float
     source: str
+    gap_far: float = 0.0
+
+
+@dataclass(frozen=True)
+class RaidRules:
+    """One locked reading of the same raid sequence.
+
+    The five names below were chosen before the October tape was scored.
+    """
+
+    name: str
+    sources: tuple[str, ...] = ("15m", "1h", "4h")
+    require_respect: bool = True
+    window_start: int = 9 * 60
+    window_end: int = 11 * 60
+    prior_session_only: bool = False
+    stop_at: str = "sweep"
+
+
+BASELINE = RaidRules("Baseline")
+VARIANTS: tuple[RaidRules, ...] = (
+    BASELINE,
+    RaidRules("Higher-timeframe sweep", sources=("1h", "4h")),
+    RaidRules("No respect wick", require_respect=False),
+    RaidRules("Stop beyond the gap", stop_at="gap"),
+    RaidRules(
+        "Prior-hour liquidity, 9:30",
+        sources=("1h",),
+        window_start=9 * 60 + 30,
+        prior_session_only=True,
+    ),
+)
 
 
 @dataclass(frozen=True)
@@ -106,18 +139,27 @@ def collect_pools(*series: tuple[list[Bar], str]) -> list[Pool]:
     return pools
 
 
-def _in_entry_window(ts: datetime) -> bool:
+def _in_entry_window(ts: datetime, start: int = 9 * 60, end: int = 11 * 60) -> bool:
     local = ts.astimezone(_NY)
     if local.isoweekday() > 5:
         return False
     minutes = local.hour * 60 + local.minute
-    return 9 * 60 <= minutes < 11 * 60
+    return start <= minutes < end
 
 
-def _window_end(ts: datetime) -> datetime:
+def _window_end(ts: datetime, end_minute: int = 11 * 60) -> datetime:
     local = ts.astimezone(_NY)
-    end_local = datetime.combine(local.date(), time(11, 0), tzinfo=_NY)
+    hour, minute = divmod(end_minute, 60)
+    end_local = datetime.combine(local.date(), time(hour, minute), tzinfo=_NY)
     return end_local.astimezone(timezone.utc)
+
+
+def _pool_allowed(pool: Pool, session: datetime, rules: RaidRules) -> bool:
+    if pool.source not in rules.sources:
+        return False
+    if rules.prior_session_only and pool.available >= session:
+        return False
+    return True
 
 
 def _ny_date(ts: datetime):
@@ -135,7 +177,7 @@ def _gap_at(bars: list[Bar], index: int) -> _Gap | None:
     return None
 
 
-def _apply_bar(leg: _Leg, bars: list[Bar], index: int) -> RaidSetup | None:
+def _apply_bar(leg: _Leg, bars: list[Bar], index: int, rules: RaidRules) -> RaidSetup | None:
     if leg.dead:
         return None
     born = _gap_at(bars, index)
@@ -162,7 +204,9 @@ def _apply_bar(leg: _Leg, bars: list[Bar], index: int) -> RaidSetup | None:
             leg.dead = True
         elif bar.low <= gap.near:
             leg.respected = True
-    if leg.dead or not leg.respected or gap is None:
+    if leg.dead or gap is None:
+        return None
+    if rules.require_respect and not leg.respected:
         return None
 
     for retrace in leg.retrace:
@@ -177,7 +221,7 @@ def _apply_bar(leg: _Leg, bars: list[Bar], index: int) -> RaidSetup | None:
             continue
         leg.used.add(retrace.index)
         session = volume_session_start(bar.ts)
-        if session != leg.session or not _in_entry_window(bar.ts):
+        if session != leg.session or not _in_entry_window(bar.ts, rules.window_start, rules.window_end):
             return None
         return RaidSetup(
             side=leg.trade_side,
@@ -186,23 +230,32 @@ def _apply_bar(leg: _Leg, bars: list[Bar], index: int) -> RaidSetup | None:
             sweep_extreme=leg.extreme,
             level=leg.level,
             source=leg.source,
+            gap_far=gap.far,
         )
     return None
 
 
-def find_raid_setups(bars: list[Bar], pools: list[Pool], *, tick_size: float) -> list[RaidSetup]:
+def find_raid_setups(
+    bars: list[Bar],
+    pools: list[Pool],
+    *,
+    tick_size: float,
+    rules: RaidRules | None = None,
+) -> list[RaidSetup]:
+    rules = rules or BASELINE
     was_through = [False] * len(pools)
     leg: _Leg | None = None
     found: list[RaidSetup] = []
     for index, bar in enumerate(bars):
         if leg is not None:
-            setup = _apply_bar(leg, bars, index)
+            setup = _apply_bar(leg, bars, index, rules)
             if leg.dead:
                 leg = None
             if setup is not None:
                 found.append(setup)
                 leg = None
 
+        session = volume_session_start(bar.ts)
         taken_buy: list[int] = []
         taken_sell: list[int] = []
         for pool_index, pool in enumerate(pools):
@@ -214,7 +267,12 @@ def find_raid_setups(bars: list[Bar], pools: list[Pool], *, tick_size: float) ->
             else:
                 through = bar.low <= pool.price - tick_size
                 bucket = taken_sell
-            if through and not was_through[pool_index]:
+            if (
+                through
+                and not was_through[pool_index]
+                and session is not None
+                and _pool_allowed(pool, session, rules)
+            ):
                 bucket.append(pool_index)
             was_through[pool_index] = through
         if taken_buy and taken_sell:
@@ -226,7 +284,6 @@ def find_raid_setups(bars: list[Bar], pools: list[Pool], *, tick_size: float) ->
         # the displacement gap is what ends it.
         if leg is not None:
             continue
-        session = volume_session_start(bar.ts)
         if session is None:
             continue
         if taken_buy:
@@ -250,9 +307,13 @@ def find_raid_setups(bars: list[Bar], pools: list[Pool], *, tick_size: float) ->
     return found
 
 
+def _bar_at(fill_bars: list[Bar], ts: datetime) -> int:
+    return bisect_left(fill_bars, ts, key=lambda bar: bar.ts)
+
+
 def _refine_extreme(setup: RaidSetup, fill_bars: list[Bar], signal_minutes: int) -> float:
     end = setup.sweep_time + timedelta(minutes=signal_minutes)
-    chosen = [bar for bar in fill_bars if setup.sweep_time <= bar.ts < end]
+    chosen = fill_bars[_bar_at(fill_bars, setup.sweep_time) : _bar_at(fill_bars, end)]
     if not chosen:
         return setup.sweep_extreme
     if setup.side == "short":
@@ -306,18 +367,17 @@ def simulate_raid_setups(
     fill_bars: list[Bar],
     *,
     signal_minutes: int = 15,
+    stop_at: str = "sweep",
+    window_end: int = 11 * 60,
 ) -> list[RaidTrade]:
     trades: list[RaidTrade] = []
     fills_per_day: dict = {}
     busy_until: datetime | None = None
     for setup in setups:
         entry_from = setup.signal_time + timedelta(minutes=signal_minutes)
-        deadline = _window_end(setup.signal_time)
-        entry_index = next(
-            (i for i, bar in enumerate(fill_bars) if entry_from <= bar.ts < deadline),
-            None,
-        )
-        if entry_index is None:
+        deadline = _window_end(setup.signal_time, window_end)
+        entry_index = _bar_at(fill_bars, entry_from)
+        if entry_index >= len(fill_bars) or fill_bars[entry_index].ts >= deadline:
             continue
         entry_bar = fill_bars[entry_index]
         if busy_until is not None and entry_bar.ts < busy_until:
@@ -325,7 +385,10 @@ def simulate_raid_setups(
         day = _ny_date(entry_bar.ts)
         if fills_per_day.get(day, 0) >= 2:
             continue
-        extreme = _refine_extreme(setup, fill_bars, signal_minutes)
+        if stop_at == "gap":
+            extreme = setup.gap_far
+        else:
+            extreme = _refine_extreme(setup, fill_bars, signal_minutes)
         stop = _stop_price(setup.side, extreme)
         entry_px = _market(setup.side == "long", entry_bar.open)
         if setup.side == "short" and stop <= entry_px:
@@ -373,12 +436,56 @@ def simulate_raid_setups(
     return trades
 
 
-def backtest_raid_retrace(outright_bars: list[OutrightBar]) -> list[RaidTrade]:
-    from engine.marketdata.outrights import front_schedule, resample_outrights, segment_bars
-
+def backtest_raid_retrace(
+    outright_bars: list[OutrightBar],
+    rules: RaidRules | None = None,
+) -> list[RaidTrade]:
+    rules = rules or BASELINE
     trades: list[RaidTrade] = []
     fills_per_day: dict = {}
     busy_until: datetime | None = None
+    for _piece, signal, pools, fills, segment in _prepared(outright_bars):
+        setups = [
+            setup
+            for setup in find_raid_setups(signal, pools, tick_size=_TICK, rules=rules)
+            if setup.signal_time >= segment.start
+        ]
+        segment_trades = _simulate_with_book(
+            setups,
+            fills,
+            fills_per_day,
+            busy_until,
+            rules,
+        )
+        if segment_trades:
+            busy_until = segment_trades[-1].exit_time
+        trades.extend(segment_trades)
+    return trades
+
+
+def compare_raid_variants(outright_bars: list[OutrightBar]) -> list[tuple[RaidRules, list[RaidTrade]]]:
+    """Score the five locked variants on one prepared tape."""
+    books: dict[str, tuple[dict, datetime | None]] = {rules.name: ({}, None) for rules in VARIANTS}
+    scored: dict[str, list[RaidTrade]] = {rules.name: [] for rules in VARIANTS}
+    for _piece, signal, pools, fills, segment in _prepared(outright_bars):
+        for rules in VARIANTS:
+            fills_per_day, busy_until = books[rules.name]
+            setups = [
+                setup
+                for setup in find_raid_setups(signal, pools, tick_size=_TICK, rules=rules)
+                if setup.signal_time >= segment.start
+            ]
+            segment_trades = _simulate_with_book(setups, fills, fills_per_day, busy_until, rules)
+            if segment_trades:
+                books[rules.name] = (fills_per_day, segment_trades[-1].exit_time)
+            scored[rules.name].extend(segment_trades)
+    return [(rules, scored[rules.name]) for rules in VARIANTS]
+
+
+def _prepared(outright_bars: list[OutrightBar]):
+    from engine.marketdata.outrights import front_schedule, resample_outrights, segment_bars
+
+    prepared = []
     for segment in front_schedule(outright_bars):
         piece = segment_bars(outright_bars, segment)
         signal = resample_outrights(piece, "15m")
@@ -387,34 +494,19 @@ def backtest_raid_retrace(outright_bars: list[OutrightBar]) -> list[RaidTrade]:
             (resample_outrights(piece, "1h"), "1h"),
             (resample_outrights(piece, "4h"), "4h"),
         )
-        setups = [
-            setup
-            for setup in find_raid_setups(signal, pools, tick_size=_TICK)
-            if setup.signal_time >= segment.start
-        ]
-        segment_trades = _simulate_with_book(
-            setups,
-            resample_outrights(piece, "1s"),
-            fills_per_day,
-            busy_until,
-        )
-        if segment_trades:
-            busy_until = segment_trades[-1].exit_time
-        trades.extend(segment_trades)
-    return trades
+        prepared.append((piece, signal, pools, resample_outrights(piece, "1s"), segment))
+    return prepared
 
 
-def _simulate_with_book(setups, fill_bars, fills_per_day, busy_until):
+def _simulate_with_book(setups, fill_bars, fills_per_day, busy_until, rules: RaidRules | None = None):
     """Same simulator, but the daily count and the open trade carry across contracts."""
     trades: list[RaidTrade] = []
     for setup in setups:
+        rules = rules or BASELINE
         entry_from = setup.signal_time + timedelta(minutes=15)
-        deadline = _window_end(setup.signal_time)
-        entry_index = next(
-            (i for i, bar in enumerate(fill_bars) if entry_from <= bar.ts < deadline),
-            None,
-        )
-        if entry_index is None:
+        deadline = _window_end(setup.signal_time, rules.window_end)
+        entry_index = _bar_at(fill_bars, entry_from)
+        if entry_index >= len(fill_bars) or fill_bars[entry_index].ts >= deadline:
             continue
         entry_bar = fill_bars[entry_index]
         if busy_until is not None and entry_bar.ts < busy_until:
@@ -422,7 +514,13 @@ def _simulate_with_book(setups, fill_bars, fills_per_day, busy_until):
         day = _ny_date(entry_bar.ts)
         if fills_per_day.get(day, 0) >= 2:
             continue
-        produced = simulate_raid_setups([setup], fill_bars, signal_minutes=15)
+        produced = simulate_raid_setups(
+            [setup],
+            fill_bars,
+            signal_minutes=15,
+            stop_at=rules.stop_at,
+            window_end=rules.window_end,
+        )
         if not produced:
             continue
         trade = produced[0]
