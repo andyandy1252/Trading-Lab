@@ -77,3 +77,19 @@
 - We chose entries only from 09:00 inclusive to 11:00 exclusive, Monday to Friday, on the America/New_York clock, because “9 am EST to 11 am EST” follows that clock through daylight saving. The inversion bar and the fill both have to land in that window, and the sweep and the inversion have to be in the same CME session (18:00–17:00). An inversion outside the window uses up the setup.
 - We chose a maximum of two entries per New York date, and one open position, because a third signal the same morning is ignored and a new signal cannot fire while the first trade is still open.
 - We chose five raid variants before scoring the October tape: the baseline; sweeps only of 1-hour and 4-hour swings; the respect wick removed; the stop 4 ticks beyond the displacement gap instead of the sweep; and prior-session 1-hour swings with entries from 9:30. The ranking uses that fixed list so a later result cannot add a sixth rule.
+
+## 2026-11-05
+
+- We chose one `BacktestReport` for the sample spec and for raid-retrace because the website must show the same cards for every recipe: New York times, prices, exit reason, net PnL, commission, and an equity point per trade.
+- We chose to hide the Trust Score on every current run because the October file is not a walk-forward and a score needs 100 trades on data the strategy never trained on. A longer file still does not publish a number until that formula exists.
+- We chose a file queue under `data/jobs/` for the first Backtest button because Supabase is not connected. The claim is still oldest-first, a second claim cannot take the same job, and the third failure stays dead. `engine/worker/schema.sql` is the Postgres replacement, using `FOR UPDATE SKIP LOCKED`.
+- We chose the day-one sentence as the English `translate()` already accepts, and we sort other sentences into runs, raid, refused, or needs-the-trader, because the page must not invent a missing stop or pretend a news window is coded.
+
+## 2026-11-12
+
+- We chose to frame the whole project as an all-in-one AI trading desk for futures day traders, with the full product and monetization vision captured in `docs/PRODUCT.md`, because the engine, worker, schema, and web work all need one shared north-star above the per-block spec decisions.
+- We chose klinecharts (Apache-2.0) as the charting foundation because it ships TradingView-style drawing tools plus a `createOverlay` API for AI markup under a clean commercial license. Pirated "TradingView premium" repos are off-limits (proprietary, DMCA'd). TradingView "Advanced Charts" is the only legit TV-parity fallback, with branding and no-open-source strings.
+- We chose the Edge Lab AI to interpret the *structured drawing objects* (tool type plus exact price/time), classify trader intent, and delegate all geometry to the deterministic ICT detectors, because an AI that estimates price levels from the chart would make the honest backtest dishonest.
+- We chose broker connections as read-only via Tradovate OAuth and TopstepX/ProjectX for the MVP, never storing broker passwords and journaling the user's own fills, because prop-firm ToS forbid credential sharing and CME licensing forbids redistributing live quotes. Live data always comes from the trader's own broker feed.
+- We chose agents that warn but never command, and execution that is paper plus alert-driven one-click (human-in-the-loop), with full hands-off auto-trading a legally-gated maybe-later, because prop evals ban automation and tailored trade advice edges into CFTC/CTA territory.
+- We chose to ship the entire concept at once in v1 rather than a phased standalone wedge, on the user's explicit call, accepting the longer runway and the full integration/legal surface at launch.
